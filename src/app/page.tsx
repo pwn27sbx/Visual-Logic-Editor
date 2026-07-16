@@ -58,17 +58,28 @@ const getId = () => `dndnode_${idCounter++}`;
 
 const NumberNode = ({ id, data }: NodeProps<Node<NumberNodeData, 'numberNode'>>) => {
   const { updateNodeData } = useReactFlow();
-  // CORRECCIÓN DEFINITIVA PARA IMAGE 25: Inicializamos localmente y eliminamos useEffect.
-  // El input local es el dueño de la edición.
   const [inputValue, setInputValue] = useState(data.value.toString());
 
   const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
-    const newValue = e.target.value;
-    setInputValue(newValue); // Actualiza la UI localmente al instante
+    let val = e.target.value;
 
-    // Convierte el texto a número para el motor de cálculo y actualiza el estado global de React Flow
-    const parsedValue = parseFloat(newValue);
-    updateNodeData(id, { value: isNaN(parsedValue) ? 0 : parsedValue });
+    // ELIMINACIÓN INTELIGENTE DE CEROS:
+    // Si la cadena tiene más de 1 caracter, empieza con '0', pero NO empieza con '0.' (decimales)
+    // Entonces le quitamos los ceros a la izquierda. (Ej: "02312" -> "2312")
+    if (val.length > 1 && val.startsWith('0') && !val.startsWith('0.')) {
+      val = val.replace(/^0+/, '');
+    }
+
+    setInputValue(val);
+
+    // SOPORTE ESTRICTO PARA DECIMALES EN EL MOTOR:
+    // Si el usuario borra todo o solo hay un signo menos, enviamos 0 al motor para no romper la matemática.
+    if (val === '' || val === '-') {
+      updateNodeData(id, { value: 0 });
+    } else {
+      const parsedValue = parseFloat(val);
+      updateNodeData(id, { value: isNaN(parsedValue) ? 0 : parsedValue });
+    }
   };
 
   return (
@@ -80,13 +91,12 @@ const NumberNode = ({ id, data }: NodeProps<Node<NumberNodeData, 'numberNode'>>)
         <label className="text-xs font-mono text-gray-500 block mb-1">Valor:</label>
         <input
           type="number"
-          value={inputValue} // Enlazado al estado de texto local
+          value={inputValue}
           onChange={handleChange}
-          step="any" // Soporte nativo para decimales
+          step="any"
           className="nodrag nopan w-full border-2 border-gray-200 rounded p-1 font-mono font-bold text-[#111] outline-none focus:border-[#00A889]"
         />
       </div>
-      {/* MANEJADORES GRANDES w-6 h-6 */}
       <Handle type="source" position={Position.Right} id="out" className="w-6 h-6 bg-[#00A889] border-2 border-[#111] -right-3" />
     </div>
   );
