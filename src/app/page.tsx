@@ -1,7 +1,7 @@
 // src/app/page.tsx
 'use client';
 
-import React, { useState, useCallback, useMemo, createContext, useContext, DragEvent } from 'react';
+import React, { useState, useCallback, useMemo, createContext, useContext, DragEvent, useEffect, ChangeEvent } from 'react';
 import {
   ReactFlow,
   MiniMap,
@@ -16,33 +16,60 @@ import {
   BackgroundVariant,
   Handle,
   Position,
-  NodeProps,
+  type NodeProps,
   ReactFlowProvider,
   useReactFlow,
   BaseEdge,
   EdgeLabelRenderer,
   getBezierPath,
-  EdgeProps
+  type EdgeProps
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
 // ============================================================================
-// 1. ARQUITECTURA DE DATOS Y CONTEXTO GLOBAL (EL MOTOR DAG)
+// 1. ARQUITECTURA DE DATOS, CONTEXTO GLOBAL Y TIPOS
 // ============================================================================
 
-// El Contexto distribuye los valores evaluados a todos los nodos y cables en tiempo real
+// ReactFlow exige que NodeData extienda Record<string, unknown> para tipado estricto
+export type NumberNodeData = Record<string, unknown> & {
+  value: number;
+};
+
+export type MathNodeData = Record<string, unknown> & {
+  op: '+' | '-' | '*' | '/';
+};
+
+export type OutputNodeData = Record<string, unknown>;
+
+// Tipo de unión para los Nodos de nuestra aplicación
+type AppNode =
+  | Node<NumberNodeData, 'numberNode'>
+  | Node<MathNodeData, 'mathNode'>
+  | Node<OutputNodeData, 'outputNode'>;
+
 const GraphContext = createContext<Record<string, number>>({});
 
-// Generador de IDs únicos para los nodos arrastrados
 let idCounter = 0;
 const getId = () => `dndnode_${idCounter++}`;
 
 // ============================================================================
-// 2. NODOS PERSONALIZADOS (UI INTERACTIVA)
+// 2. NODOS PERSONALIZADOS (UI INTERACTIVA CON MANEJADORES GRANDES)
 // ============================================================================
 
-const NumberNode = ({ id, data }: NodeProps<Node<{ value: number }>>) => {
+const NumberNode = ({ id, data }: NodeProps<Node<NumberNodeData, 'numberNode'>>) => {
   const { updateNodeData } = useReactFlow();
+  // CORRECCIÓN DEFINITIVA PARA IMAGE 25: Inicializamos localmente y eliminamos useEffect.
+  // El input local es el dueño de la edición.
+  const [inputValue, setInputValue] = useState(data.value.toString());
+
+  const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const newValue = e.target.value;
+    setInputValue(newValue); // Actualiza la UI localmente al instante
+
+    // Convierte el texto a número para el motor de cálculo y actualiza el estado global de React Flow
+    const parsedValue = parseFloat(newValue);
+    updateNodeData(id, { value: isNaN(parsedValue) ? 0 : parsedValue });
+  };
 
   return (
     <div className="bg-white border-2 border-[#111] rounded-xl shadow-xl w-48 overflow-hidden group hover:shadow-2xl transition-shadow">
@@ -51,38 +78,42 @@ const NumberNode = ({ id, data }: NodeProps<Node<{ value: number }>>) => {
       </header>
       <div className="p-4 bg-white">
         <label className="text-xs font-mono text-gray-500 block mb-1">Valor:</label>
-        {/* nodrag nopan permiten interactuar con el input sin mover el canvas */}
         <input
           type="number"
-          value={data.value}
-          onChange={(e) => updateNodeData(id, { value: parseFloat(e.target.value) || 0 })}
+          value={inputValue} // Enlazado al estado de texto local
+          onChange={handleChange}
+          step="any" // Soporte nativo para decimales
           className="nodrag nopan w-full border-2 border-gray-200 rounded p-1 font-mono font-bold text-[#111] outline-none focus:border-[#00A889]"
         />
       </div>
-      <Handle type="source" position={Position.Right} id="out" className="w-4 h-4 bg-[#00A889] border-2 border-[#111] -right-2.5" />
+      {/* MANEJADORES GRANDES w-6 h-6 */}
+      <Handle type="source" position={Position.Right} id="out" className="w-6 h-6 bg-[#00A889] border-2 border-[#111] -right-3" />
     </div>
   );
 };
 
-const MathNode = ({ id, data }: NodeProps<Node<{ op: string }>>) => {
+const MathNode = ({ id, data }: NodeProps<Node<MathNodeData, 'mathNode'>>) => {
   const { updateNodeData } = useReactFlow();
   const evaluatedValues = useContext(GraphContext);
   const result = evaluatedValues[id] ?? 0;
+
+  // Formatear decimales largos para evitar desbordamiento visual
+  const displayResult = Number.isInteger(result) ? result : parseFloat(result.toFixed(4));
 
   return (
     <div className="bg-white border-2 border-[#111] rounded-xl shadow-xl w-52 overflow-hidden group hover:shadow-2xl transition-shadow">
       <header className="bg-[#111] p-3 border-b-2 border-[#111]">
         <h3 className="font-anton text-lg text-white uppercase tracking-wider text-center">Matemático</h3>
       </header>
-      <div className="p-4 bg-gray-50 flex flex-col gap-3">
+      <div className="p-4 bg-gray-50 flex flex-col gap-3 relative">
         <div className="relative">
-          <Handle type="target" position={Position.Left} id="a" className="w-4 h-4 bg-blue-400 border-2 border-[#111] -left-6" />
+          <Handle type="target" position={Position.Left} id="a" className="w-6 h-6 bg-blue-400 border-2 border-[#111] -left-8" />
           <span className="text-xs font-mono text-gray-500 font-bold ml-2">Entrada A</span>
         </div>
 
         <select
           value={data.op}
-          onChange={(e) => updateNodeData(id, { op: e.target.value })}
+          onChange={(e) => updateNodeData(id, { op: e.target.value as MathNodeData['op'] })}
           className="nodrag nopan w-full border-2 border-[#111] bg-white rounded p-1 font-mono font-bold text-center outline-none cursor-pointer hover:bg-gray-100"
         >
           <option value="+">Sumar (+)</option>
@@ -92,33 +123,34 @@ const MathNode = ({ id, data }: NodeProps<Node<{ op: string }>>) => {
         </select>
 
         <div className="relative border-b pb-2 border-gray-200">
-          <Handle type="target" position={Position.Left} id="b" className="w-4 h-4 bg-yellow-400 border-2 border-[#111] -left-6" />
+          <Handle type="target" position={Position.Left} id="b" className="w-6 h-6 bg-yellow-400 border-2 border-[#111] -left-8" />
           <span className="text-xs font-mono text-gray-500 font-bold ml-2">Entrada B</span>
         </div>
 
         <div className="bg-[#111] rounded-lg p-2 text-center mt-1 relative">
           <span className="font-mono text-xl text-[#00A889] font-bold tabular-nums">
-            = {result}
+            = {displayResult}
           </span>
-          <Handle type="source" position={Position.Right} id="out" className="w-4 h-4 bg-red-500 border-2 border-[#111] -right-6" />
+          <Handle type="source" position={Position.Right} id="out" className="w-6 h-6 bg-red-500 border-2 border-[#111] -right-8" />
         </div>
       </div>
     </div>
   );
 };
 
-const OutputNode = ({ id }: NodeProps<Node>) => {
+const OutputNode = ({ id }: NodeProps<Node<OutputNodeData, 'outputNode'>>) => {
   const evaluatedValues = useContext(GraphContext);
   const result = evaluatedValues[id] ?? 0;
+  const displayResult = Number.isInteger(result) ? result : parseFloat(result.toFixed(4));
 
   return (
     <div className="bg-white border-2 border-[#111] rounded-xl shadow-xl w-48 overflow-hidden group hover:shadow-2xl transition-shadow">
       <header className="bg-[#00A889] p-2 border-b-2 border-[#111]">
         <h3 className="font-anton text-sm text-white uppercase tracking-wider text-center">Resultado Final</h3>
       </header>
-      <div className="p-6 bg-white text-center relative">
-        <Handle type="target" position={Position.Left} id="in" className="w-4 h-4 bg-red-500 border-2 border-[#111] -left-2.5" />
-        <span className="font-mono text-3xl font-black text-[#111] tabular-nums">{result}</span>
+      <div className="p-6 bg-white text-center relative flex justify-center items-center">
+        <Handle type="target" position={Position.Left} id="in" className="w-6 h-6 bg-red-500 border-2 border-[#111] -left-3" />
+        <span className="font-mono text-3xl font-black text-[#111] tabular-nums break-words w-full">{displayResult}</span>
       </div>
     </div>
   );
@@ -128,9 +160,10 @@ const OutputNode = ({ id }: NodeProps<Node>) => {
 // 3. CABLE PERSONALIZADO (VISUALIZA EL FLUJO DE DATOS)
 // ============================================================================
 
-const ValueEdge = ({ id, source, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, style, markerEnd }: EdgeProps) => {
+const ValueEdge = ({ source, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, style, markerEnd }: EdgeProps) => {
   const evaluatedValues = useContext(GraphContext);
   const value = evaluatedValues[source] ?? 0;
+  const displayValue = Number.isInteger(value) ? value : parseFloat(value.toFixed(4));
   const [edgePath, labelX, labelY] = getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition });
 
   return (
@@ -142,7 +175,7 @@ const ValueEdge = ({ id, source, sourceX, sourceY, targetX, targetY, sourcePosit
           className="nodrag nopan absolute pointer-events-auto z-50"
         >
           <div className="bg-white border-2 border-[#111] text-[#00A889] font-mono font-bold text-xs px-2 py-0.5 rounded shadow-md">
-            {value}
+            {displayValue}
           </div>
         </div>
       </EdgeLabelRenderer>
@@ -150,7 +183,6 @@ const ValueEdge = ({ id, source, sourceX, sourceY, targetX, targetY, sourcePosit
   );
 };
 
-// --- REGISTRO DE COMPONENTES DE REACT FLOW ---
 const nodeTypes = { numberNode: NumberNode, mathNode: MathNode, outputNode: OutputNode };
 const edgeTypes = { valueEdge: ValueEdge };
 
@@ -165,7 +197,7 @@ const Sidebar = () => {
   };
 
   return (
-    <aside className="w-64 bg-white border-r-2 border-[#111] p-4 flex flex-col h-full z-10 shadow-2xl">
+    <aside className="w-64 bg-white border-r-2 border-[#111] p-4 flex flex-col h-full z-10 shadow-2xl shrink-0 overflow-y-auto scrollbar-thin">
       <h2 className="font-anton text-xl uppercase tracking-widest text-[#111] mb-4 border-b-2 border-gray-200 pb-2">Nodos</h2>
       <p className="text-xs text-gray-500 font-mono mb-6">Arrastra un bloque hacia la cuadrícula.</p>
 
@@ -191,22 +223,22 @@ const GuideModal = ({ onClose }: { onClose: () => void }) => (
         <h2 className="font-anton text-2xl uppercase tracking-widest text-white">Guía del <span className="text-[#00A889]">Arquitecto</span></h2>
         <button onClick={onClose} className="text-gray-400 hover:text-white"><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
       </header>
-      <div className="p-6 overflow-y-auto flex-1">
+      <div className="p-6 overflow-y-auto flex-1 scrollbar-thin">
         <div className="mb-6 p-5 bg-green-50 rounded-xl border border-green-200">
           <h3 className="font-bold text-green-900 mb-2 uppercase tracking-wide text-sm">💡 ¿Qué demuestra este proyecto?</h3>
           <p className="text-sm text-green-800 leading-relaxed">
             Un Editor Lógico Visual interactivo basado en un <strong>Grafo Dirigido Acíclico (DAG)</strong>. Demuestra capacidad para manejar estados globales complejos, recursividad algorítmica y manipulación de interfaces visuales avanzadas en tiempo real.
           </p>
         </div>
-        <h3 className="text-lg font-bold text-[#111] mb-3 font-mono uppercase border-b pb-2">Características Top 99.9%</h3>
+        <h3 className="text-lg font-bold text-[#111] mb-3 font-mono uppercase border-b pb-2">Características Core de Alto Rendimiento</h3>
         <ul className="space-y-4 text-sm text-gray-700">
+          <li><strong className="text-[#111] bg-gray-100 px-2 py-1 rounded">Manejadores Grandes y soporte Decimal:</strong> Conexiones precisas con puntos un 50% más grandes. El motor matemático soporta decimales flotantes sin romper la UI.</li>
           <li><strong className="text-[#111] bg-gray-100 px-2 py-1 rounded">Instanciación Dinámica (Drag & Drop):</strong> Usa el panel izquierdo para crear infinitos nodos. El sistema les asigna IDs dinámicos y los integra al ecosistema de cálculo al instante.</li>
-          <li><strong className="text-[#111] bg-gray-100 px-2 py-1 rounded">Visualización de Flujo (Custom Edges):</strong> Los cables no solo conectan, actúan como conductos reales de datos. Mira la etiqueta flotante en cada cable para saber exactamente qué valor está viajando hacia el siguiente nodo.</li>
-          <li><strong className="text-[#111] bg-gray-100 px-2 py-1 rounded">Motor Recursivo a 60fps:</strong> Al cambiar un número en un <em>Input</em>, el contexto global rastrea la topología de los cables y actualiza los nodos matemáticos y resultados en cascada sin bloqueos.</li>
-          <li><strong className="text-[#111] bg-gray-100 px-2 py-1 rounded">Controles de Canvas:</strong> Usa la rueda del ratón para hacer Zoom. Haz clic y arrastra el fondo para desplazarte. Selecciona un cable o nodo y presiona <strong>Backspace</strong> para eliminarlo.</li>
+          <li><strong className="text-[#111] bg-gray-100 px-2 py-1 rounded">Visualización de Flujo (Custom Edges):</strong> Los cables no solo conectan, actúan como conductos reales de datos mostrando la etiqueta con el valor que viaja.</li>
+          <li><strong className="text-[#111] bg-gray-100 px-2 py-1 rounded">Motor Recursivo a 60fps:</strong> Al cambiar un número, el contexto global rastrea la topología de los cables y actualiza los nodos en cascada.</li>
         </ul>
       </div>
-      <footer className="bg-gray-50 p-4 border-t border-gray-200 flex justify-end">
+      <footer className="bg-gray-50 p-4 border-t border-gray-200 flex justify-end shrink-0">
         <button onClick={onClose} className="font-anton uppercase tracking-widest text-white bg-[#00A889] hover:bg-green-700 px-6 py-2 rounded-lg transition-colors">Comenzar a Crear</button>
       </footer>
     </div>
@@ -217,9 +249,10 @@ const GuideModal = ({ onClose }: { onClose: () => void }) => (
 // 5. COMPONENTE PRINCIPAL (MOTOR DE EVALUACIÓN Y CANVAS)
 // ============================================================================
 
-const initialNodes: Node[] = [
-  { id: '1', type: 'numberNode', position: { x: 100, y: 150 }, data: { value: 25 } },
-  { id: '2', type: 'numberNode', position: { x: 100, y: 350 }, data: { value: 5 } },
+// Actualizamos initialNodes para usar decimales y tipado estricto
+const initialNodes: AppNode[] = [
+  { id: '1', type: 'numberNode', position: { x: 100, y: 150 }, data: { value: 25.5 } },
+  { id: '2', type: 'numberNode', position: { x: 100, y: 350 }, data: { value: 5.2 } },
   { id: '3', type: 'mathNode', position: { x: 450, y: 200 }, data: { op: '*' } },
   { id: '4', type: 'outputNode', position: { x: 800, y: 250 }, data: {} },
 ];
@@ -231,7 +264,7 @@ const initialEdges: Edge[] = [
 ];
 
 function LogicEditorContent() {
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
+  const [nodes, setNodes, onNodesChange] = useNodesState<AppNode>(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const [isGuideOpen, setIsGuideOpen] = useState(false);
   const { screenToFlowPosition } = useReactFlow();
@@ -252,7 +285,7 @@ function LogicEditorContent() {
       visited.add(nodeId);
 
       if (node.type === 'numberNode') {
-        values[nodeId] = (node.data as any).value || 0;
+        values[nodeId] = node.data.value || 0;
       }
       else if (node.type === 'mathNode') {
         const edgeA = edges.find(e => e.target === nodeId && e.targetHandle === 'a');
@@ -260,7 +293,7 @@ function LogicEditorContent() {
 
         const valA = edgeA ? evaluate(edgeA.source) : 0;
         const valB = edgeB ? evaluate(edgeB.source) : 0;
-        const op = (node.data as any).op || '+';
+        const op = node.data.op || '+';
 
         let res = 0;
         if (op === '+') res = valA + valB;
@@ -283,25 +316,27 @@ function LogicEditorContent() {
     return values;
   }, [nodes, edges]);
 
-  // --- HANDLERS DE INTERACCIÓN ---
   const onConnect = useCallback((params: Connection) => {
-    // Al conectar, forzamos que use nuestro cable personalizado con animación
-    setEdges((eds) => addEdge({ ...params, type: 'valueEdge', animated: true }, eds));
+    // Al conectar, forzamos que use nuestro cable personalizado ValueEdge
+    setEdges((eds) => addEdge({ ...params, id: `${params.source}-${params.target}`, type: 'valueEdge', animated: true }, eds));
   }, [setEdges]);
 
   const onDrop = useCallback((event: DragEvent) => {
       event.preventDefault();
-      const type = event.dataTransfer.getData('application/reactflow');
-      if (typeof type === 'undefined' || !type) return;
+      const type = event.dataTransfer.getData('application/reactflow') as AppNode['type'];
+      if (!type) return;
 
       const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      const id = getId();
 
-      const newNode: Node = {
-        id: getId(),
-        type,
-        position,
-        data: type === 'numberNode' ? { value: 0 } : type === 'mathNode' ? { op: '+' } : {},
-      };
+      let newNode: AppNode;
+      if (type === 'numberNode') {
+        newNode = { id, type, position, data: { value: 0 } };
+      } else if (type === 'mathNode') {
+        newNode = { id, type, position, data: { op: '+' } };
+      } else {
+        newNode = { id, type: 'outputNode', position, data: {} };
+      }
 
       setNodes((nds) => nds.concat(newNode));
     }, [screenToFlowPosition, setNodes]);
@@ -318,7 +353,7 @@ function LogicEditorContent() {
             <h1 className="font-anton text-3xl uppercase tracking-tighter text-[#111]">Visual <span className="text-[#00A889]">Logic</span> Editor</h1>
             <p className="text-gray-500 font-mono text-xs mt-1">Conecta nodos y visualiza el flujo de datos.</p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex gap-3 shrink-0">
           <button onClick={() => { setNodes([]); setEdges([]); }} className="font-mono font-bold text-xs bg-red-100 text-red-600 border-2 border-transparent hover:border-red-600 px-4 py-2 rounded-lg transition-all">
             LIMPIAR CANVAS
           </button>
@@ -332,7 +367,6 @@ function LogicEditorContent() {
       <div className="flex-1 w-full h-full flex relative">
         <Sidebar />
 
-        {/* Proveemos los datos calculados a todos los componentes internos */}
         <GraphContext.Provider value={evaluatedGraph}>
           <div className="flex-1 h-full" onDrop={onDrop} onDragOver={onDragOver}>
             <ReactFlow
@@ -347,8 +381,8 @@ function LogicEditorContent() {
               className="bg-gray-50"
             >
               <Controls className="!bg-white !border-2 !border-[#111] !rounded-xl !shadow-lg" />
-              <MiniMap className="!bg-white !border-2 !border-[#111] !rounded-xl !shadow-lg" zoomable pannable />
-              <Background variant={BackgroundVariant.Dots} color="#ccc" gap={20} size={2} />
+              <MiniMap className="!bg-white !border-2 !border-[#111] !rounded-xl !shadow-lg" pannable zoomable />
+              <Background color="#ccc" gap={20} size={2} variant={BackgroundVariant.Dots} />
             </ReactFlow>
           </div>
         </GraphContext.Provider>
@@ -359,7 +393,6 @@ function LogicEditorContent() {
   );
 }
 
-// ReactFlowProvider es obligatorio envolviendo todo para usar hooks como screenToFlowPosition
 export default function VisualEditorPage() {
   return (
     <ReactFlowProvider>
